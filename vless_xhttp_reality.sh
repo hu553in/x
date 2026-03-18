@@ -81,8 +81,6 @@ systemctl enable xray
 systemctl restart xray
 systemctl status xray --no-pager
 
-curl -I http://127.0.0.1
-
 journalctl -u xray -n 100 --no-pager
 tail -n 100 /var/log/xray/error.log
 
