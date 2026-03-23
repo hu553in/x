@@ -2,9 +2,64 @@
 
 set -euxo pipefail
 
-UUID="11111111-1111-1111-1111-111111111111"
-DOMAIN="x.example.com"
-EMAIL="example@example.com"
+SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/lib/vless_common.sh"
+
+DOMAIN="${DOMAIN:-x.example.com}"
+EMAIL="${EMAIL:-example@example.com}"
+XRAY_CONFIG_PATH="${XRAY_CONFIG_PATH:-/usr/local/etc/xray/config.json}"
+XRAY_LOGLEVEL="${XRAY_LOGLEVEL:-warning}"
+XRAY_ACCESS_LOG="${XRAY_ACCESS_LOG:-/var/log/xray/access.log}"
+XRAY_ERROR_LOG="${XRAY_ERROR_LOG:-/var/log/xray/error.log}"
+XRAY_LISTEN="${XRAY_LISTEN:-/dev/shm/xray-xhttp.sock,0666}"
+CLIENT_FLOW="${CLIENT_FLOW:-}"
+XHTTP_PATH="${XHTTP_PATH:-/database}"
+XHTTP_MODE="${XHTTP_MODE:-stream-one}"
+TLS_SERVER_PORT="${TLS_SERVER_PORT:-443}"
+HTTP_SERVER_PORT="${HTTP_SERVER_PORT:-80}"
+QR_TYPE="${QR_TYPE:-ANSIUTF8}"
+CLIENT_FINGERPRINT="${CLIENT_FINGERPRINT:-chrome}"
+PROFILE_NAME="${PROFILE_NAME:-XHTTP}"
+NGINX_CONF_PATH="${NGINX_CONF_PATH:-/etc/nginx/conf.d/xray.conf}"
+CERTBOT_CERT_PATH="${CERTBOT_CERT_PATH:-/etc/letsencrypt/live/$DOMAIN/fullchain.pem}"
+CERTBOT_KEY_PATH="${CERTBOT_KEY_PATH:-/etc/letsencrypt/live/$DOMAIN/privkey.pem}"
+CERTBOT_OPTIONS_PATH="${CERTBOT_OPTIONS_PATH:-/etc/letsencrypt/options-ssl-nginx.conf}"
+CERTBOT_DHPARAM_PATH="${CERTBOT_DHPARAM_PATH:-/etc/letsencrypt/ssl-dhparams.pem}"
+
+usage() {
+	cat <<'EOF'
+Usage:
+  ./vless_xhttp_nginx.sh
+
+Environment overrides:
+  UUID                 Client UUID for Xray.
+  DOMAIN               Public hostname for nginx and the generated vless:// link.
+  EMAIL                Email for certbot registration.
+  XRAY_CONFIG_PATH     Xray config path.
+  XRAY_LOGLEVEL        Xray log level.
+  XRAY_ACCESS_LOG      Xray access log path.
+  XRAY_ERROR_LOG       Xray error log path.
+  XRAY_LISTEN          Xray unix socket with mode.
+  CLIENT_FLOW          VLESS flow value.
+  XHTTP_PATH           XHTTP path.
+  XHTTP_MODE           XHTTP mode.
+  TLS_SERVER_PORT      Public TLS/QUIC port.
+  HTTP_SERVER_PORT     Public HTTP port.
+  QR_TYPE              qrencode output type.
+  CLIENT_FINGERPRINT   Client fingerprint in the generated vless:// link.
+  PROFILE_NAME         Link label prefix after #.
+  NGINX_CONF_PATH      Nginx config path.
+  CERTBOT_CERT_PATH    TLS certificate path for nginx.
+  CERTBOT_KEY_PATH     TLS private key path for nginx.
+  CERTBOT_OPTIONS_PATH Included Certbot nginx options path.
+  CERTBOT_DHPARAM_PATH DH params path.
+EOF
+}
+
+maybe_print_help "${1:-}" usage
+UUID="${UUID:-$(generate_uuid)}"
+NGINX_LOCATION_PATH="${XHTTP_PATH%/}/"
 
 apt update
 apt upgrade -y
@@ -36,22 +91,22 @@ apt install -y nginx certbot python3-certbot-nginx
 bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
 xray version
 
-cat >/usr/local/etc/xray/config.json <<EOF
+cat >"$XRAY_CONFIG_PATH" <<EOF
 {
     "log": {
-        "loglevel": "warning",
-        "access": "/var/log/xray/access.log",
-        "error": "/var/log/xray/error.log"
+        "loglevel": "$XRAY_LOGLEVEL",
+        "access": "$XRAY_ACCESS_LOG",
+        "error": "$XRAY_ERROR_LOG"
     },
     "inbounds": [
         {
-            "listen": "/dev/shm/xray-xhttp.sock,0666",
+            "listen": "$XRAY_LISTEN",
             "protocol": "vless",
             "settings": {
                 "clients": [
                     {
                         "id": "$UUID",
-                        "flow": ""
+                        "flow": "$CLIENT_FLOW"
                     }
                 ],
                 "decryption": "none"
@@ -60,8 +115,8 @@ cat >/usr/local/etc/xray/config.json <<EOF
                 "network": "xhttp",
                 "security": "none",
                 "xhttpSettings": {
-                    "path": "/database",
-                    "mode": "stream-one"
+                    "path": "$XHTTP_PATH",
+                    "mode": "$XHTTP_MODE"
                 }
             }
         }
@@ -78,10 +133,10 @@ systemctl enable xray
 systemctl restart xray
 systemctl status xray --no-pager
 
-cat >/etc/nginx/conf.d/xray.conf <<EOF
+cat >"$NGINX_CONF_PATH" <<EOF
 server {
-    listen 80;
-    listen [::]:80;
+    listen $HTTP_SERVER_PORT;
+    listen [::]:$HTTP_SERVER_PORT;
 
     server_name $DOMAIN;
 
@@ -101,14 +156,14 @@ certbot --nginx -d "$DOMAIN" \
 	--email "$EMAIL" \
 	--no-eff-email
 
-cat >/etc/nginx/conf.d/xray.conf <<EOF
+cat >"$NGINX_CONF_PATH" <<EOF
 server {
-    listen 443      ssl http2;
-    listen [::]:443 ssl http2;
-    listen 443      quic reuseport;
-    listen [::]:443 quic reuseport;
+    listen $TLS_SERVER_PORT      ssl http2;
+    listen [::]:$TLS_SERVER_PORT ssl http2;
+    listen $TLS_SERVER_PORT      quic reuseport;
+    listen [::]:$TLS_SERVER_PORT quic reuseport;
 
-    add_header Alt-Svc 'h3=":443"; ma=86400' always;
+    add_header Alt-Svc 'h3=":$TLS_SERVER_PORT"; ma=86400' always;
 
     server_name $DOMAIN;
 
@@ -117,7 +172,7 @@ server {
         add_header Content-Type text/plain;
     }
 
-    location ^~ /database/ {
+    location ^~ $NGINX_LOCATION_PATH {
         client_max_body_size 0;
 
         grpc_read_timeout 300s;
@@ -126,14 +181,14 @@ server {
         grpc_set_header X-Real-IP       \$remote_addr;
         grpc_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
 
-        grpc_pass grpc://unix:/dev/shm/xray-xhttp.sock;
+        grpc_pass grpc://unix:${XRAY_LISTEN%%,*};
     }
 
-    ssl_certificate     /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
+    ssl_certificate     $CERTBOT_CERT_PATH;
+    ssl_certificate_key $CERTBOT_KEY_PATH;
 
-    include     /etc/letsencrypt/options-ssl-nginx.conf;
-    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+    include     $CERTBOT_OPTIONS_PATH;
+    ssl_dhparam $CERTBOT_DHPARAM_PATH;
 }
 
 server {
@@ -141,8 +196,8 @@ server {
         return 301 https://\$host\$request_uri;
     }
 
-    listen 80;
-    listen [::]:80;
+    listen $HTTP_SERVER_PORT;
+    listen [::]:$HTTP_SERVER_PORT;
 
     server_name $DOMAIN;
 
@@ -160,7 +215,7 @@ journalctl -u xray -n 100 --no-pager
 tail -n 100 /var/log/nginx/error.log
 tail -n 100 /var/log/xray/error.log
 
-URL="vless://$UUID@$DOMAIN:443?security=tls&sni=$DOMAIN&alpn=h3&type=xhttp&path=%2Fdatabase&mode=stream-one&encryption=none&fp=chrome#XHTTP-$DOMAIN-$UUID"
+URL_PATH="$(url_encode "$XHTTP_PATH")"
+URL="vless://$UUID@$DOMAIN:$TLS_SERVER_PORT?security=tls&sni=$DOMAIN&alpn=h3&type=xhttp&path=$URL_PATH&mode=$XHTTP_MODE&encryption=none&fp=$CLIENT_FINGERPRINT#$PROFILE_NAME-$DOMAIN-$UUID"
 
-qrencode -t ANSIUTF8 "$URL"
-echo "$URL"
+print_qr_and_url "$QR_TYPE" "$URL"
