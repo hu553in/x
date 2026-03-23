@@ -22,7 +22,7 @@ services:
       XUI_ENABLE_FAIL2BAN: "true"
     ports:
       # Publish any other required inbound ports here, or switch to network_mode: host.
-      - "443:443/tcp" # VPN traffic
+      - "443:443" # VPN traffic
 
   caddy:
     <<: *common
