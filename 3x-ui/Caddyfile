@@ -7,6 +7,7 @@ x.example.com {
 		X-Frame-Options SAMEORIGIN
 		Referrer-Policy strict-origin-when-cross-origin
 		-Server
+		-X-Powered-By
 	}
 
 	reverse_proxy 3x-ui:2053
